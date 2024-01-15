@@ -85,15 +85,10 @@ class LeggedRobot(BaseTask):
 
     def prepare_idm_data(self):
         self.obs_buf_idm[:, 0, :] = torch.cat(
-            (self.obs_buf_last[:, 9:13],
-             self.obs_buf_last[:, 16:28],
-             self.obs_buf_last[:, :3],
-             self.obs_buf_last[:, 3:6],
-             self.obs_buf_last[:, 28:40], self.obs_buf_last[:, -4:],
-             self.obs_buf[:, :3] - self.obs_buf_last[:, :3],
-             self.obs_buf[:, 3:6] - self.obs_buf_last[:, 3:6],
-             self.obs_buf[:, 28:40] - self.obs_buf_last[:, 28:40],
-             self.obs_buf[:, -4:]),
+            (self.obs_buf[:, 9:13],
+             self.obs_buf[:, 16:28],
+             self.obs_buf[:, :6],
+             self.obs_buf[:, 28:40], self.obs_buf[:, -4:]),
             dim=-1)
         # np.save(self.log_dir + '/obs' + str(self.iter) + '.npy', self.obs_buf_idm.detach().cpu().numpy())
         # np.save(self.log_dir + '/torques' + str(self.iter) + '.npy', self.torques.detach().cpu().numpy())
@@ -785,7 +780,7 @@ class LeggedRobot(BaseTask):
             self.termination_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0],
                                                                                         self.actor_handles[0],
                                                                                         termination_contact_names[i])
-        self.obs_buf_idm = torch.zeros(self.num_envs, 1, 60, device=self.device, dtype=torch.float)
+        self.obs_buf_idm = torch.zeros(self.num_envs, 1, 38, device=self.device, dtype=torch.float)
 
     def _get_env_origins(self):
         """ Sets environment origins. On rough terrain the origins are defined by the terrain platforms.

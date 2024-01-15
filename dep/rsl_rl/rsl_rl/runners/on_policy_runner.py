@@ -39,6 +39,7 @@ import torch
 from rsl_rl.algorithms import PPO
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent
 from rsl_rl.env import VecEnv
+import numpy as np
 
 
 class LSTM(torch.nn.Module):
@@ -81,8 +82,6 @@ class OnPolicyRunner:
         self.device = device
         self.env = env
 
-        self.N_mid = -1024
-
         if self.env.num_privileged_obs is not None:
             num_critic_obs = self.env.num_privileged_obs
         else:
@@ -91,24 +90,19 @@ class OnPolicyRunner:
         actor_critic_class = eval(self.cfg["policy_class_name"])  # ActorCritic
         actor_critic: ActorCritic = actor_critic_class(self.env.num_obs,
                                                        num_critic_obs,
-                                                       self.env.num_actions + 10,
+                                                       self.env.num_actions,
                                                        **self.policy_cfg).to(self.device)
-        actor_critic_bro: ActorCritic = actor_critic_class(self.env.num_obs,
-                                                           num_critic_obs,
-                                                           self.env.num_actions,
-                                                           **self.policy_cfg).to(self.device)
+
         alg_class = eval(self.cfg["algorithm_class_name"])  # PPO
         self.alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg)
-        self.alg_bro: PPO = alg_class(actor_critic_bro, device=self.device, **self.alg_cfg)
 
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
 
         # init storage and model
-        self.alg.init_storage(self.env.num_envs + self.N_mid, self.num_steps_per_env, [self.env.num_obs],
-                              [self.env.num_privileged_obs], [self.env.num_actions + 10])
-        self.alg_bro.init_storage(-self.N_mid, self.num_steps_per_env, [self.env.num_obs],
-                                  [self.env.num_privileged_obs], [self.env.num_actions])
+        self.alg.init_storage(self.env.num_envs, self.num_steps_per_env, [self.env.num_obs],
+                              [self.env.num_privileged_obs], [self.env.num_actions])
+
         # Log
         self.log_dir = log_dir
         self.writer = None
@@ -119,14 +113,12 @@ class OnPolicyRunner:
         _, _ = self.env.reset()
 
         self.idm_net = LSTM().cuda()
-        self.h_state = torch.zeros([3, -self.N_mid, 64], dtype=torch.float32, device=self.device)
-        self.c_state = torch.zeros([3, -self.N_mid, 64], dtype=torch.float32, device=self.device)
-        self.h_state_eval = torch.zeros([3, self.env.num_envs + self.N_mid, 64], dtype=torch.float32,
-                                        device=self.device)
-        self.c_state_eval = torch.zeros([3, self.env.num_envs + self.N_mid, 64], dtype=torch.float32,
-                                        device=self.device)
+        self.h_state = torch.zeros([3, self.env.num_envs, 64], dtype=torch.float32, device=self.device)
+        self.c_state = torch.zeros([3, self.env.num_envs, 64], dtype=torch.float32, device=self.device)
         self.optimizer = torch.optim.Adam(self.idm_net.parameters(), lr=0.002)
         self.pred_loss = torch.nn.MSELoss().cuda()
+        self.log_dir_idm = os.path.join(self.log_dir, 'data_idm')
+        os.makedirs(self.log_dir_idm, exist_ok=True)
 
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
@@ -140,7 +132,6 @@ class OnPolicyRunner:
         critic_obs = privileged_obs if privileged_obs is not None else obs
         obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
         self.alg.actor_critic.train()  # switch to train mode (for dropout for example)
-        self.alg_bro.actor_critic.train()  # switch to train mode (for dropout for example)
 
         ep_infos = []
         rewbuffer = deque(maxlen=100)
@@ -152,50 +143,26 @@ class OnPolicyRunner:
         for it in range(self.current_learning_iteration, tot_iter):
             start = time.time()
             # Rollout
-            obs_buf_idm_array = torch.zeros([-self.N_mid, self.num_steps_per_env, 60], dtype=torch.float32,
+            obs_buf_idm_array = torch.zeros([self.env.num_envs, self.num_steps_per_env, 38], dtype=torch.float32,
                                             device=self.device)
-            env_actions_array = torch.zeros([-self.N_mid, self.num_steps_per_env, 12], dtype=torch.float32,
+            env_actions_array = torch.zeros([self.env.num_envs, self.num_steps_per_env, 12], dtype=torch.float32,
                                             device=self.device)
+            env_dones_array = torch.zeros([self.env.num_envs, self.num_steps_per_env], dtype=torch.bool,
+                                          device=self.device)
             with (torch.inference_mode()):
                 for i in range(self.num_steps_per_env):
-                    obs_next = self.alg.act(obs[:self.N_mid, :], critic_obs[:self.N_mid, :])
-                    actions_bro = self.alg_bro.act(obs[self.N_mid:, :], critic_obs[self.N_mid:, :])
-
-                    input = torch.zeros_like(obs_next).to(self.device)
-                    input[:, :18] = obs_next[:, :18]
-                    input[:, 18:] = (obs_next[:, 18:] > 0.0)
-                    idm_obs_buf = torch.zeros([self.env.num_envs + self.N_mid, 1, 60], dtype=torch.float32,
-                                              device=self.device)
-                    idm_obs_buf[:, 0, :] = torch.cat((obs[:self.N_mid, 9:13],
-                                                      obs[:self.N_mid, 16:28],
-                                                      obs[:self.N_mid, :3],
-                                                      obs[:self.N_mid, 3:6],
-                                                      obs[:self.N_mid, 28:40], obs[:self.N_mid, -4:],
-                                                      input),
-                                                     dim=-1)
-
-                    actions_pred, (self.h_state_eval, self.c_state_eval) = self.idm_net(idm_obs_buf,
-                                                                                        self.h_state_eval,
-                                                                                        self.c_state_eval)
-
-                    actions = torch.cat((actions_pred[:, 0, :], actions_bro), dim=0)
+                    actions = self.alg.act(obs, critic_obs)
                     obs, privileged_obs, rewards, dones, infos, obs_buf_idm, env_actions = self.env.step(actions)
 
-                    obs_buf_idm_array[:, i, :] = obs_buf_idm[self.N_mid:, 0, :]
-                    env_actions_array[:, i, :] = env_actions[self.N_mid:, :]
+                    obs_buf_idm_array[:, i, :] = obs_buf_idm[:, 0, :]
+                    env_actions_array[:, i, :] = env_actions
+                    env_dones_array[:, i] = dones
 
                     critic_obs = privileged_obs if privileged_obs is not None else obs
                     obs, critic_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(
                         self.device), dones.to(self.device)
 
-                    info1 = None
-                    info2 = None
-                    if 'time_outs' in infos:
-                        info1 = {'time_outs': infos['time_outs'][:self.N_mid]}
-                        info2 = {'time_outs': infos['time_outs'][self.N_mid:]}
-
-                    self.alg.process_env_step(rewards[:self.N_mid], dones[:self.N_mid], info1)
-                    self.alg_bro.process_env_step(rewards[self.N_mid:], dones[self.N_mid:], info2)
+                    self.alg.process_env_step(rewards, dones, infos)
 
                     if self.log_dir is not None:
                         # Book keeping
@@ -214,40 +181,36 @@ class OnPolicyRunner:
 
                 # Learning step
                 start = stop
-                self.alg.compute_returns(critic_obs[:self.N_mid, :])
-                self.alg_bro.compute_returns(critic_obs[self.N_mid:, :])
+                self.alg.compute_returns(critic_obs)
 
-            for k in range(30):
-                actions_pred, (self.h_state, self.c_state) = self.idm_net(obs_buf_idm_array, self.h_state, self.c_state)
-                self.h_state = torch.autograd.Variable(self.h_state.data).cuda()
-                self.c_state = torch.autograd.Variable(self.c_state.data).cuda()
-                loss = self.pred_loss(10.0 * actions_pred, 10.0 * env_actions_array)
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-                if k == 29:
-                    print(f'idm loss: {loss}')
+            # for k in range(30):
+            #     actions_pred, (self.h_state, self.c_state) = self.idm_net(obs_buf_idm_array, self.h_state, self.c_state)
+            #     self.h_state = torch.autograd.Variable(self.h_state.data).cuda()
+            #     self.c_state = torch.autograd.Variable(self.c_state.data).cuda()
+            #     loss = self.pred_loss(10.0 * actions_pred, 10.0 * env_actions_array)
+            #     self.optimizer.zero_grad()
+            #     loss.backward()
+            #     self.optimizer.step()
+            #     if k == 29:
+            #         print(f'idm loss: {loss}')
+
+            torch.save({
+                'obs': obs_buf_idm_array,
+                'actions': env_actions_array,
+                'resets:': env_dones_array,
+            }, os.path.join(self.log_dir_idm, 'data' + str(it) + '.pt'))
 
             mean_value_loss, mean_surrogate_loss = self.alg.update()
-            mean_value_loss_bro, mean_surrogate_loss_bro = self.alg_bro.update()
             stop = time.time()
             learn_time = stop - start
             if self.log_dir is not None:
                 self.log(locals())
             if it % self.save_interval == 0:
                 self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
-
-                model_scripted = torch.jit.script(self.idm_net)  # Export to TorchScript
-                model_scripted.save(
-                    os.path.join(self.log_dir, 'idm_{}.pt'.format(it)))  # Save
-
             ep_infos.clear()
 
         self.current_learning_iteration += num_learning_iterations
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
-
-        model_scripted = torch.jit.script(self.idm_net)  # Export to TorchScript
-        model_scripted.save(os.path.join(self.log_dir, 'idm_{}.pt'.format(self.current_learning_iteration)))  # Save
 
     def log(self, locs, width=80, pad=35):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
