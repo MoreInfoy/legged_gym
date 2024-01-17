@@ -75,13 +75,13 @@ def play(args):
     camera_direction = np.array(env_cfg.viewer.lookat) - np.array(env_cfg.viewer.pos)
     img_idx = 0
 
-    # log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs')
-    # log_dir = os.path.join(log_root, 'data_idm')
-    # os.makedirs(log_dir, exist_ok=True)
+    log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs')
+    log_dir = os.path.join(log_root, 'data_idm')
+    os.makedirs(log_dir, exist_ok=True)
 
     for i in range(10 * int(env.max_episode_length)):
         actions = policy(obs.detach())
-        obs, _, rews, dones, infos = env.step(actions.detach())
+        obs, _, rews, dones, infos, obs_idm, env_actions = env.step(actions.detach())
         # np.save(log_dir + '/obs' + str(i) + '.npy', obs.detach().cpu().numpy())
         # np.save(log_dir + '/actions' + str(i) + '.npy', actions.detach().cpu().numpy())
         if RECORD_FRAMES:

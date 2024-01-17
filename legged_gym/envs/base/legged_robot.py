@@ -79,7 +79,7 @@ class LeggedRobot(BaseTask):
         self.init_done = True
 
         log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs')
-        self.log_dir = os.path.join(log_root, 'data_test')
+        self.log_dir = os.path.join(log_root, 'data_idm')
         os.makedirs(self.log_dir, exist_ok=True)
         self.iter = 0
 
@@ -90,9 +90,12 @@ class LeggedRobot(BaseTask):
              self.obs_buf[:, :6],
              self.obs_buf[:, 28:40], self.obs_buf[:, -4:]),
             dim=-1)
-        # np.save(self.log_dir + '/obs' + str(self.iter) + '.npy', self.obs_buf_idm.detach().cpu().numpy())
-        # np.save(self.log_dir + '/torques' + str(self.iter) + '.npy', self.torques.detach().cpu().numpy())
-        # self.iter += 1
+        torch.save({
+            'state': self.obs_buf_idm,
+            'actions': self.actions,
+            'resets:': self.reset_buf,
+        }, os.path.join(self.log_dir, 'data' + str(self.iter) + '.pt'))
+        self.iter += 1
 
     def step(self, actions):
         """ Apply actions, simulate, call self.post_physics_step()

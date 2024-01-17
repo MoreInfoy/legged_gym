@@ -112,13 +112,13 @@ class OnPolicyRunner:
 
         _, _ = self.env.reset()
 
-        self.idm_net = LSTM().cuda()
-        self.h_state = torch.zeros([3, self.env.num_envs, 64], dtype=torch.float32, device=self.device)
-        self.c_state = torch.zeros([3, self.env.num_envs, 64], dtype=torch.float32, device=self.device)
-        self.optimizer = torch.optim.Adam(self.idm_net.parameters(), lr=0.002)
-        self.pred_loss = torch.nn.MSELoss().cuda()
-        self.log_dir_idm = os.path.join(self.log_dir, 'data_idm')
-        os.makedirs(self.log_dir_idm, exist_ok=True)
+        # self.idm_net = LSTM().cuda()
+        # self.h_state = torch.zeros([3, self.env.num_envs, 64], dtype=torch.float32, device=self.device)
+        # self.c_state = torch.zeros([3, self.env.num_envs, 64], dtype=torch.float32, device=self.device)
+        # self.optimizer = torch.optim.Adam(self.idm_net.parameters(), lr=0.002)
+        # self.pred_loss = torch.nn.MSELoss().cuda()
+        # self.log_dir_idm = os.path.join(self.log_dir, 'data_idm')
+        # os.makedirs(self.log_dir_idm, exist_ok=True)
 
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
@@ -194,11 +194,11 @@ class OnPolicyRunner:
             #     if k == 29:
             #         print(f'idm loss: {loss}')
 
-            torch.save({
-                'obs': obs_buf_idm_array,
-                'actions': env_actions_array,
-                'resets:': env_dones_array,
-            }, os.path.join(self.log_dir_idm, 'data' + str(it) + '.pt'))
+            # torch.save({
+            #     'obs': obs_buf_idm_array,
+            #     'actions': env_actions_array,
+            #     'resets:': env_dones_array,
+            # }, os.path.join(self.log_dir_idm, 'data' + str(it) + '.pt'))
 
             mean_value_loss, mean_surrogate_loss = self.alg.update()
             stop = time.time()
