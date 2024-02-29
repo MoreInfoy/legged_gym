@@ -39,33 +39,6 @@ import torch
 from rsl_rl.algorithms import PPO
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent
 from rsl_rl.env import VecEnv
-import numpy as np
-
-
-class LSTM(torch.nn.Module):
-    def __init__(self):
-        super(LSTM, self).__init__()
-        self.lstm = torch.nn.LSTM(
-            input_size=60,
-            hidden_size=64,
-            num_layers=3,
-            batch_first=True
-        )
-        self.out = torch.nn.Linear(64, 12)
-
-        for name, param in self.lstm.named_parameters():
-            torch.nn.init.uniform(param, -10, 10)
-
-    def forward(self, x, h0, c0):
-        # shape
-        # x (batch, time_step, input_size)
-        # h_state (n_layers, batch, hidden_size)
-        # r_out (batch, time_step, output_size)
-        r_out, (hn, cn) = self.lstm(x, (h0, c0))
-        outs = []
-        for time_step in range(r_out.size(1)):
-            outs.append(self.out(r_out[:, time_step, :]))
-        return torch.stack(outs, dim=1), (hn, cn)
 
 
 class OnPolicyRunner:
@@ -76,32 +49,27 @@ class OnPolicyRunner:
                  log_dir=None,
                  device='cpu'):
 
-        self.cfg = train_cfg["runner"]
+        self.cfg=train_cfg["runner"]
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
-
         if self.env.num_privileged_obs is not None:
-            num_critic_obs = self.env.num_privileged_obs
+            num_critic_obs = self.env.num_privileged_obs 
         else:
             num_critic_obs = self.env.num_obs
-
-        actor_critic_class = eval(self.cfg["policy_class_name"])  # ActorCritic
-        actor_critic: ActorCritic = actor_critic_class(self.env.num_obs,
-                                                       num_critic_obs,
-                                                       self.env.num_actions,
-                                                       **self.policy_cfg).to(self.device)
-
-        alg_class = eval(self.cfg["algorithm_class_name"])  # PPO
+        actor_critic_class = eval(self.cfg["policy_class_name"]) # ActorCritic
+        actor_critic: ActorCritic = actor_critic_class( self.env.num_obs,
+                                                        num_critic_obs,
+                                                        self.env.num_actions,
+                                                        **self.policy_cfg).to(self.device)
+        alg_class = eval(self.cfg["algorithm_class_name"]) # PPO
         self.alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg)
-
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
 
         # init storage and model
-        self.alg.init_storage(self.env.num_envs, self.num_steps_per_env, [self.env.num_obs],
-                              [self.env.num_privileged_obs], [self.env.num_actions])
+        self.alg.init_storage(self.env.num_envs, self.num_steps_per_env, [self.env.num_obs], [self.env.num_privileged_obs], [self.env.num_actions])
 
         # Log
         self.log_dir = log_dir
@@ -111,27 +79,18 @@ class OnPolicyRunner:
         self.current_learning_iteration = 0
 
         _, _ = self.env.reset()
-
-        # self.idm_net = LSTM().cuda()
-        # self.h_state = torch.zeros([3, self.env.num_envs, 64], dtype=torch.float32, device=self.device)
-        # self.c_state = torch.zeros([3, self.env.num_envs, 64], dtype=torch.float32, device=self.device)
-        # self.optimizer = torch.optim.Adam(self.idm_net.parameters(), lr=0.002)
-        # self.pred_loss = torch.nn.MSELoss().cuda()
-        # self.log_dir_idm = os.path.join(self.log_dir, 'data_idm')
-        # os.makedirs(self.log_dir_idm, exist_ok=True)
-
+    
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
         if self.log_dir is not None and self.writer is None:
             self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
         if init_at_random_ep_len:
-            self.env.episode_length_buf = torch.randint_like(self.env.episode_length_buf,
-                                                             high=int(self.env.max_episode_length))
+            self.env.episode_length_buf = torch.randint_like(self.env.episode_length_buf, high=int(self.env.max_episode_length))
         obs = self.env.get_observations()
         privileged_obs = self.env.get_privileged_observations()
         critic_obs = privileged_obs if privileged_obs is not None else obs
         obs, critic_obs = obs.to(self.device), critic_obs.to(self.device)
-        self.alg.actor_critic.train()  # switch to train mode (for dropout for example)
+        self.alg.actor_critic.train() # switch to train mode (for dropout for example)
 
         ep_infos = []
         rewbuffer = deque(maxlen=100)
@@ -143,27 +102,14 @@ class OnPolicyRunner:
         for it in range(self.current_learning_iteration, tot_iter):
             start = time.time()
             # Rollout
-            obs_buf_idm_array = torch.zeros([self.env.num_envs, self.num_steps_per_env, 38], dtype=torch.float32,
-                                            device=self.device)
-            env_actions_array = torch.zeros([self.env.num_envs, self.num_steps_per_env, 12], dtype=torch.float32,
-                                            device=self.device)
-            env_dones_array = torch.zeros([self.env.num_envs, self.num_steps_per_env], dtype=torch.bool,
-                                          device=self.device)
-            with (torch.inference_mode()):
+            with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
                     actions = self.alg.act(obs, critic_obs)
-                    obs, privileged_obs, rewards, dones, infos, obs_buf_idm, env_actions = self.env.step(actions)
-
-                    obs_buf_idm_array[:, i, :] = obs_buf_idm[:, 0, :]
-                    env_actions_array[:, i, :] = env_actions
-                    env_dones_array[:, i] = dones
-
+                    obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
                     critic_obs = privileged_obs if privileged_obs is not None else obs
-                    obs, critic_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(
-                        self.device), dones.to(self.device)
-
+                    obs, critic_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(self.device), dones.to(self.device)
                     self.alg.process_env_step(rewards, dones, infos)
-
+                    
                     if self.log_dir is not None:
                         # Book keeping
                         if 'episode' in infos:
@@ -182,24 +128,7 @@ class OnPolicyRunner:
                 # Learning step
                 start = stop
                 self.alg.compute_returns(critic_obs)
-
-            # for k in range(30):
-            #     actions_pred, (self.h_state, self.c_state) = self.idm_net(obs_buf_idm_array, self.h_state, self.c_state)
-            #     self.h_state = torch.autograd.Variable(self.h_state.data).cuda()
-            #     self.c_state = torch.autograd.Variable(self.c_state.data).cuda()
-            #     loss = self.pred_loss(10.0 * actions_pred, 10.0 * env_actions_array)
-            #     self.optimizer.zero_grad()
-            #     loss.backward()
-            #     self.optimizer.step()
-            #     if k == 29:
-            #         print(f'idm loss: {loss}')
-
-            # torch.save({
-            #     'obs': obs_buf_idm_array,
-            #     'actions': env_actions_array,
-            #     'resets:': env_dones_array,
-            # }, os.path.join(self.log_dir_idm, 'data' + str(it) + '.pt'))
-
+            
             mean_value_loss, mean_surrogate_loss = self.alg.update()
             stop = time.time()
             learn_time = stop - start
@@ -208,7 +137,7 @@ class OnPolicyRunner:
             if it % self.save_interval == 0:
                 self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
             ep_infos.clear()
-
+        
         self.current_learning_iteration += num_learning_iterations
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
 
@@ -253,24 +182,24 @@ class OnPolicyRunner:
             log_string = (f"""{'#' * width}\n"""
                           f"""{str.center(width, ' ')}\n\n"""
                           f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                              'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
+                            'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                           f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                           f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
                           f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
                           f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n""")
-            #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
-            #   f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
+                        #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
+                        #   f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
         else:
             log_string = (f"""{'#' * width}\n"""
                           f"""{str.center(width, ' ')}\n\n"""
                           f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                              'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
+                            'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
                           f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
                           f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n""")
-            #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
-            #   f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
+                        #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
+                        #   f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
 
         log_string += ep_string
         log_string += (f"""{'-' * width}\n"""
@@ -287,7 +216,7 @@ class OnPolicyRunner:
             'optimizer_state_dict': self.alg.optimizer.state_dict(),
             'iter': self.current_learning_iteration,
             'infos': infos,
-        }, path)
+            }, path)
 
     def load(self, path, load_optimizer=True):
         loaded_dict = torch.load(path)
@@ -298,7 +227,7 @@ class OnPolicyRunner:
         return loaded_dict['infos']
 
     def get_inference_policy(self, device=None):
-        self.alg.actor_critic.eval()  # switch to evaluation mode (dropout for example)
+        self.alg.actor_critic.eval() # switch to evaluation mode (dropout for example)
         if device is not None:
             self.alg.actor_critic.to(device)
         return self.alg.actor_critic.act_inference
